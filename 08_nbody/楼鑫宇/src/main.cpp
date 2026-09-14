@@ -17,13 +17,15 @@ struct Arguments {
     std::filesystem::path output;
     std::string backend = "cpu";
     int block_size = 128;
+    nbody::RunOptions run_options;
 };
 
 void print_usage(const char* program) {
     std::cerr << "用法: " << program
               << " --input particles.txt --config simulation.cfg --output results/run"
               << " [--backend cpu|cuda-naive|cuda-tiled]"
-              << " [--block-size 64|128|256|512]\n";
+              << " [--block-size 64|128|256|512]"
+              << " [--record on|off] [--diagnostics final|off]\n";
 }
 
 Arguments parse_arguments(int argc, char** argv) {
@@ -54,6 +56,24 @@ Arguments parse_arguments(int argc, char** argv) {
                  arguments.block_size != 256 && arguments.block_size != 512)) {
                 throw std::runtime_error("--block-size 只支持 64、128、256 或 512");
             }
+            continue;
+        }
+        if (option == "--record") {
+            if (++i >= argc) throw std::runtime_error("--record 缺少值");
+            const std::string value = argv[i];
+            if (value != "on" && value != "off") {
+                throw std::runtime_error("--record 只支持 on 或 off");
+            }
+            arguments.run_options.record_enabled = value == "on";
+            continue;
+        }
+        if (option == "--diagnostics") {
+            if (++i >= argc) throw std::runtime_error("--diagnostics 缺少值");
+            const std::string value = argv[i];
+            if (value != "final" && value != "off") {
+                throw std::runtime_error("--diagnostics 只支持 final 或 off");
+            }
+            arguments.run_options.diagnostics_enabled = value == "final";
             continue;
         }
         if (option != "--input" && option != "--config" && option != "--output") {
@@ -87,15 +107,18 @@ int main(int argc, char** argv) {
         nbody::CpuRunResult result;
         std::string precision;
         if (arguments.backend == "cpu") {
-            result = nbody::simulate_cpu(particles, config);
+            result = nbody::simulate_cpu(particles, config,
+                                         arguments.run_options);
             precision = "fp64";
         } else if (arguments.backend == "cuda-naive") {
             result = nbody::simulate_cuda_naive(particles, config,
-                                                arguments.block_size);
+                                                arguments.block_size,
+                                                arguments.run_options);
             precision = "fp32";
         } else {
             result = nbody::simulate_cuda_tiled(particles, config,
-                                                arguments.block_size);
+                                                arguments.block_size,
+                                                arguments.run_options);
             precision = "fp32";
         }
         const double before_write_ms = std::chrono::duration<double, std::milli>(

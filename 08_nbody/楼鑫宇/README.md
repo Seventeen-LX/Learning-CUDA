@@ -43,6 +43,8 @@ python scripts/validate_two_body.py results/two_body_cuda_naive
 
 `cuda-naive` 在 GPU 上以 FP32 保存位置、速度、质量和加速度，输出元数据会明确记录 `backend=cuda-naive` 与 `precision=fp32`。
 
+性能采样可附加 `--record off --diagnostics off`，关闭轨迹采集、轨迹文件和守恒量计算；`final_state.csv`、`metadata.json` 与 `performance.json` 仍会生成。普通演示默认保持 `--record on --diagnostics final`。
+
 ## CUDA 分块版
 
 ```bash
@@ -108,6 +110,11 @@ python scripts/generate_cluster.py --n 4096 --seed 42 --output data/cluster_4096
 - `diagnostics.csv`：初态和末态的能量、动量、角动量与质心。
 - `performance.json`：力计算时间、模拟时间、粒子步吞吐和守恒误差。
 
+## 性能分析与可视化
+
+Nsight Systems 时间线、轨迹输出开销、4096 粒子星团动画及小天体带扰动对照实验见
+[`docs/m5-experiments.md`](docs/m5-experiments.md)。原始结果保留在服务器的 `results/` 下，文档同时给出完整复现命令。
+
 ## 下一阶段
 
-用 Nsight Systems 检查每步同步与 kernel 启动开销，再根据 4096 和更大规模的实测决定是否融合积分 kernel、使用 CUDA Graphs 或进入大规模近似算法。
+根据时间线结果，后续优化应优先继续降低 O(N²) 力计算成本；积分 kernel 融合或 CUDA Graphs 可作为减少短任务启动开销的补充方向。

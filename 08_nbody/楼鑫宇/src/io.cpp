@@ -99,10 +99,11 @@ void write_run_outputs(const std::filesystem::path& output_dir,
         record_count > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max())) {
         throw std::runtime_error("轨迹头部超出 int32 范围");
     }
-    if (result.trajectory.size() != particle_count * record_count * 3) {
+    if (result.record_enabled &&
+        result.trajectory.size() != particle_count * record_count * 3) {
         throw std::runtime_error("内部轨迹长度不一致");
     }
-    {
+    if (result.record_enabled) {
         std::ofstream output(output_dir / "trajectory.bin", std::ios::binary);
         if (!output) throw std::runtime_error("无法创建 trajectory.bin");
         write_u32_le(output, static_cast<std::uint32_t>(particle_count));
@@ -121,7 +122,7 @@ void write_run_outputs(const std::filesystem::path& output_dir,
                    << ',' << p.mass << '\n';
         }
     }
-    {
+    if (result.diagnostics_enabled) {
         std::ofstream output(output_dir / "diagnostics.csv");
         if (!output) throw std::runtime_error("无法创建 diagnostics.csv");
         output << "stage,kinetic,potential,total_energy,px,py,pz,lx,ly,lz,cmx,cmy,cmz\n"
@@ -137,14 +138,21 @@ void write_run_outputs(const std::filesystem::path& output_dir,
         write_row("initial", result.initial_diagnostics);
         write_row("final", result.final_diagnostics);
     }
-    const double energy_scale = std::max(
-        result.initial_diagnostics.kinetic + std::abs(result.initial_diagnostics.potential),
-        1e-30);
-    const double relative_energy_error = std::abs(
-        result.final_diagnostics.total_energy - result.initial_diagnostics.total_energy) /
-        energy_scale;
-    const double momentum_error = vector_norm(
-        result.final_diagnostics.momentum - result.initial_diagnostics.momentum);
+    double relative_energy_error = 0.0;
+    double momentum_error = 0.0;
+    if (result.diagnostics_enabled) {
+        const double energy_scale = std::max(
+            result.initial_diagnostics.kinetic +
+                std::abs(result.initial_diagnostics.potential),
+            1e-30);
+        relative_energy_error = std::abs(
+            result.final_diagnostics.total_energy -
+            result.initial_diagnostics.total_energy) /
+            energy_scale;
+        momentum_error = vector_norm(
+            result.final_diagnostics.momentum -
+            result.initial_diagnostics.momentum);
+    }
     const double particle_steps_per_second =
         config.num_steps == 0 || result.simulation_ms <= 0.0 ? 0.0 :
         static_cast<double>(particle_count) * config.num_steps /
@@ -156,16 +164,26 @@ void write_run_outputs(const std::filesystem::path& output_dir,
                << "  \"schema_version\": 1,\n"
                << "  \"backend\": \"" << backend << "\",\n"
                << "  \"precision\": \"" << precision << "\",\n"
+               << "  \"record_enabled\": "
+               << (result.record_enabled ? "true" : "false") << ",\n"
+               << "  \"diagnostics_mode\": \""
+               << (result.diagnostics_enabled ? "final" : "off") << "\",\n"
                << "  \"particle_count\": " << particle_count << ",\n"
                << "  \"num_steps\": " << config.num_steps << ",\n"
                << "  \"force_evaluations\": " << result.force_evaluations << ",\n"
                << "  \"force_total_ms\": " << result.force_ms << ",\n"
                << "  \"simulation_wall_ms\": " << result.simulation_ms << ",\n"
                << "  \"pre_output_wall_ms\": " << pre_output_wall_ms << ",\n"
-               << "  \"particle_steps_per_sec\": " << particle_steps_per_second << ",\n"
-               << "  \"relative_energy_error\": " << relative_energy_error << ",\n"
-               << "  \"absolute_momentum_error\": " << momentum_error << "\n"
-               << "}\n";
+               << "  \"particle_steps_per_sec\": " << particle_steps_per_second << ",\n";
+        if (result.diagnostics_enabled) {
+            output << "  \"relative_energy_error\": " << relative_energy_error
+                   << ",\n"
+                   << "  \"absolute_momentum_error\": " << momentum_error << "\n";
+        } else {
+            output << "  \"relative_energy_error\": null,\n"
+                   << "  \"absolute_momentum_error\": null\n";
+        }
+        output << "}\n";
     }
     {
         std::ofstream output(output_dir / "metadata.json");
@@ -175,6 +193,10 @@ void write_run_outputs(const std::filesystem::path& output_dir,
                << "  \"status\": \"complete\",\n"
                << "  \"backend\": \"" << backend << "\",\n"
                << "  \"precision\": \"" << precision << "\",\n"
+               << "  \"record_enabled\": "
+               << (result.record_enabled ? "true" : "false") << ",\n"
+               << "  \"diagnostics_mode\": \""
+               << (result.diagnostics_enabled ? "final" : "off") << "\",\n"
                << "  \"input_file\": \"" << input_path.filename().string() << "\",\n"
                << "  \"particle_count\": " << particle_count << ",\n"
                << "  \"record_count\": " << record_count << ",\n"
@@ -195,12 +217,18 @@ void write_run_outputs(const std::filesystem::path& output_dir,
                << "    \"G\": " << config.gravitational_constant << ",\n"
                << "    \"softening\": " << config.softening << ",\n"
                << "    \"integrator\": \"" << to_string(config.integrator) << "\"\n"
-               << "  },\n  \"trajectory\": {\n"
-               << "    \"file\": \"trajectory.bin\",\n"
-               << "    \"dtype\": \"<f4\",\n"
-               << "    \"layout\": \"particle_record_xyz\",\n"
-               << "    \"header\": \"<i4,<i4\"\n"
-               << "  }\n}\n";
+               << "  },\n  \"trajectory\": ";
+        if (result.record_enabled) {
+            output << "{\n"
+                   << "    \"file\": \"trajectory.bin\",\n"
+                   << "    \"dtype\": \"<f4\",\n"
+                   << "    \"layout\": \"particle_record_xyz\",\n"
+                   << "    \"header\": \"<i4,<i4\"\n"
+                   << "  }\n";
+        } else {
+            output << "null\n";
+        }
+        output << "}\n";
     }
 }
 

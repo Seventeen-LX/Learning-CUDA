@@ -37,6 +37,18 @@ int main() {
         require(motion.recorded_steps == std::vector<int>({0, 3, 4}),
                 "记录步应包含初始、间隔和末状态");
 
+        nbody::RunOptions compute_only;
+        compute_only.record_enabled = false;
+        compute_only.diagnostics_enabled = false;
+        const auto unrecorded =
+            nbody::simulate_cpu(particle, motion_config, compute_only);
+        require(unrecorded.recorded_steps.empty() &&
+                    unrecorded.trajectory.empty(),
+                "record=off 不应保留轨迹");
+        require(!unrecorded.record_enabled &&
+                    !unrecorded.diagnostics_enabled,
+                "运行选项没有写入结果");
+
         std::vector<nbody::Particle> pair(2);
         pair[0] = {{-1, 0, 0}, {}, 1};
         pair[1] = {{1, 0, 0}, {}, 1};

@@ -108,20 +108,31 @@ std::vector<int> make_recorded_steps(int num_steps, int record_interval) {
 }
 
 CpuRunResult simulate_cpu(const std::vector<Particle>& initial_particles,
-                          const Config& config) {
+                          const Config& config,
+                          const RunOptions& options) {
     if (initial_particles.empty()) throw std::invalid_argument("至少需要一个粒子");
     CpuRunResult result;
+    result.record_enabled = options.record_enabled;
+    result.diagnostics_enabled = options.diagnostics_enabled;
     result.particles = initial_particles;
-    result.recorded_steps = make_recorded_steps(config.num_steps, config.record_interval);
+    if (options.record_enabled) {
+        result.recorded_steps =
+            make_recorded_steps(config.num_steps, config.record_interval);
+    }
     const std::size_t record_count = result.recorded_steps.size();
     const std::size_t n = result.particles.size();
-    if (record_count > std::numeric_limits<std::size_t>::max() / n / 3) {
+    if (options.record_enabled &&
+        record_count > std::numeric_limits<std::size_t>::max() / n / 3) {
         throw std::overflow_error("轨迹大小溢出");
     }
-    result.trajectory.resize(n * record_count * 3);
-    record_snapshot(result.particles, 0, record_count, result.trajectory);
-    result.initial_diagnostics = compute_diagnostics(
-        result.particles, config.gravitational_constant, config.softening);
+    if (options.record_enabled) {
+        result.trajectory.resize(n * record_count * 3);
+        record_snapshot(result.particles, 0, record_count, result.trajectory);
+    }
+    if (options.diagnostics_enabled) {
+        result.initial_diagnostics = compute_diagnostics(
+            result.particles, config.gravitational_constant, config.softening);
+    }
 
     const auto simulation_begin = Clock::now();
     auto force_begin = Clock::now();
@@ -161,14 +172,17 @@ CpuRunResult simulate_cpu(const std::vector<Particle>& initial_particles,
         }
 
         check_finite(result.particles, step);
-        if (next_record < record_count && result.recorded_steps[next_record] == step) {
+        if (options.record_enabled && next_record < record_count &&
+            result.recorded_steps[next_record] == step) {
             record_snapshot(result.particles, next_record, record_count, result.trajectory);
             ++next_record;
         }
     }
     result.simulation_ms = milliseconds(simulation_begin, Clock::now());
-    result.final_diagnostics = compute_diagnostics(
-        result.particles, config.gravitational_constant, config.softening);
+    if (options.diagnostics_enabled) {
+        result.final_diagnostics = compute_diagnostics(
+            result.particles, config.gravitational_constant, config.softening);
+    }
     return result;
 }
 

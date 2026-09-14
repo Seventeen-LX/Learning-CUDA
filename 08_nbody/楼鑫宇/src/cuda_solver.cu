@@ -261,7 +261,8 @@ void record_snapshot(const std::vector<float4>& positions,
 static CpuRunResult simulate_cuda(const std::vector<Particle>& initial_particles,
                                   const Config& config,
                                   int block_size,
-                                  ForceKernel force_kernel) {
+                                  ForceKernel force_kernel,
+                                  const RunOptions& options) {
     if (initial_particles.empty()) throw std::invalid_argument("至少需要一个粒子");
     if (initial_particles.size() >
         static_cast<std::size_t>(std::numeric_limits<int>::max())) {
@@ -278,6 +279,8 @@ static CpuRunResult simulate_cuda(const std::vector<Particle>& initial_particles
     std::vector<float3> host_velocities(particle_count);
 
     CpuRunResult result;
+    result.record_enabled = options.record_enabled;
+    result.diagnostics_enabled = options.diagnostics_enabled;
     result.particles.resize(particle_count);
     for (std::size_t i = 0; i < particle_count; ++i) {
         const Particle& source = initial_particles[i];
@@ -305,17 +308,24 @@ static CpuRunResult simulate_cuda(const std::vector<Particle>& initial_particles
         };
     }
 
-    result.recorded_steps = make_recorded_steps(config.num_steps,
-                                                 config.record_interval);
+    if (options.record_enabled) {
+        result.recorded_steps = make_recorded_steps(config.num_steps,
+                                                     config.record_interval);
+    }
     const std::size_t record_count = result.recorded_steps.size();
-    if (record_count > std::numeric_limits<std::size_t>::max() /
+    if (options.record_enabled &&
+        record_count > std::numeric_limits<std::size_t>::max() /
                            particle_count / 3) {
         throw std::overflow_error("CUDA 轨迹大小溢出");
     }
-    result.trajectory.resize(particle_count * record_count * 3);
-    record_snapshot(host_positions, 0, record_count, result.trajectory);
-    result.initial_diagnostics = compute_diagnostics(
-        result.particles, config.gravitational_constant, config.softening);
+    if (options.record_enabled) {
+        result.trajectory.resize(particle_count * record_count * 3);
+        record_snapshot(host_positions, 0, record_count, result.trajectory);
+    }
+    if (options.diagnostics_enabled) {
+        result.initial_diagnostics = compute_diagnostics(
+            result.particles, config.gravitational_constant, config.softening);
+    }
 
     DeviceBuffer<float4> device_positions(particle_count);
     DeviceBuffer<float3> device_velocities(particle_count);
@@ -376,7 +386,7 @@ static CpuRunResult simulate_cuda(const std::vector<Particle>& initial_particles
             NBODY_CUDA_CHECK(cudaGetLastError());
         }
 
-        if (next_record < record_count &&
+        if (options.record_enabled && next_record < record_count &&
             result.recorded_steps[next_record] == step) {
             NBODY_CUDA_CHECK(cudaMemcpy(
                 host_positions.data(), device_positions.get(),
@@ -412,23 +422,27 @@ static CpuRunResult simulate_cuda(const std::vector<Particle>& initial_particles
             position.w,
         };
     }
-    result.final_diagnostics = compute_diagnostics(
-        result.particles, config.gravitational_constant, config.softening);
+    if (options.diagnostics_enabled) {
+        result.final_diagnostics = compute_diagnostics(
+            result.particles, config.gravitational_constant, config.softening);
+    }
     return result;
 }
 
 CpuRunResult simulate_cuda_naive(const std::vector<Particle>& initial_particles,
                                  const Config& config,
-                                 int block_size) {
+                                 int block_size,
+                                 const RunOptions& options) {
     return simulate_cuda(initial_particles, config, block_size,
-                         ForceKernel::Naive);
+                         ForceKernel::Naive, options);
 }
 
 CpuRunResult simulate_cuda_tiled(const std::vector<Particle>& initial_particles,
                                  const Config& config,
-                                 int block_size) {
+                                 int block_size,
+                                 const RunOptions& options) {
     return simulate_cuda(initial_particles, config, block_size,
-                         ForceKernel::Tiled);
+                         ForceKernel::Tiled, options);
 }
 
 }  // namespace nbody

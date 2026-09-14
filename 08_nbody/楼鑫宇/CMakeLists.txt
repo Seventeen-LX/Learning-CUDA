@@ -20,5 +20,16 @@ if(BUILD_TESTING)
     add_executable(nbody_tests tests/test_cpu.cpp)
     target_link_libraries(nbody_tests PRIVATE nbody_core)
     add_test(NAME cpu_core COMMAND nbody_tests)
-endif()
 
+    add_executable(nbody_io_tests tests/test_io.cpp)
+    target_link_libraries(nbody_io_tests PRIVATE nbody_core)
+    add_test(NAME io_parsing COMMAND nbody_io_tests)
+
+    add_executable(nbody_trajectory_tests tests/test_trajectory.cpp)
+    target_link_libraries(nbody_trajectory_tests PRIVATE nbody_core)
+    add_test(NAME trajectory_roundtrip COMMAND nbody_trajectory_tests)
+
+    add_executable(nbody_convergence_tests tests/test_convergence.cpp)
+    target_link_libraries(nbody_convergence_tests PRIVATE nbody_core)
+    add_test(NAME dt_convergence COMMAND nbody_convergence_tests)
+endif()

@@ -22,7 +22,8 @@ struct Arguments {
 void print_usage(const char* program) {
     std::cerr << "用法: " << program
               << " --input particles.txt --config simulation.cfg --output results/run"
-              << " [--backend cpu|cuda-naive] [--block-size 64|128|256|512]\n";
+              << " [--backend cpu|cuda-naive|cuda-tiled]"
+              << " [--block-size 64|128|256|512]\n";
 }
 
 Arguments parse_arguments(int argc, char** argv) {
@@ -32,8 +33,11 @@ Arguments parse_arguments(int argc, char** argv) {
         if (option == "--backend") {
             if (++i >= argc) throw std::runtime_error("--backend 缺少值");
             arguments.backend = argv[i];
-            if (arguments.backend != "cpu" && arguments.backend != "cuda-naive") {
-                throw std::runtime_error("--backend 只支持 cpu 或 cuda-naive");
+            if (arguments.backend != "cpu" &&
+                arguments.backend != "cuda-naive" &&
+                arguments.backend != "cuda-tiled") {
+                throw std::runtime_error(
+                    "--backend 只支持 cpu、cuda-naive 或 cuda-tiled");
             }
             continue;
         }
@@ -85,8 +89,12 @@ int main(int argc, char** argv) {
         if (arguments.backend == "cpu") {
             result = nbody::simulate_cpu(particles, config);
             precision = "fp64";
-        } else {
+        } else if (arguments.backend == "cuda-naive") {
             result = nbody::simulate_cuda_naive(particles, config,
+                                                arguments.block_size);
+            precision = "fp32";
+        } else {
+            result = nbody::simulate_cuda_tiled(particles, config,
                                                 arguments.block_size);
             precision = "fp32";
         }

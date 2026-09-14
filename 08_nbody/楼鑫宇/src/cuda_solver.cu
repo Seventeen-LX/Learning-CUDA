@@ -15,6 +15,8 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
+enum class ForceKernel { Naive, Tiled };
+
 void check_cuda(cudaError_t status, const char* expression, int line) {
     if (status != cudaSuccess) {
         throw std::runtime_error(std::string("CUDA 错误，行 ") +
@@ -102,6 +104,55 @@ __global__ void force_naive_kernel(const float4* positions,
     accelerations[i] = make_float3(ax, ay, az);
 }
 
+__global__ void force_tiled_kernel(const float4* positions,
+                                   float3* accelerations,
+                                   int particle_count,
+                                   float gravitational_constant,
+                                   float softening_squared) {
+    extern __shared__ float4 tile[];
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    const bool valid_target = i < particle_count;
+    const float4 target = valid_target ? positions[i] : make_float4(0, 0, 0, 0);
+    float ax = 0.0f;
+    float ay = 0.0f;
+    float az = 0.0f;
+
+    for (int tile_begin = 0; tile_begin < particle_count;
+         tile_begin += blockDim.x) {
+        const int source_index = tile_begin + threadIdx.x;
+        tile[threadIdx.x] = source_index < particle_count
+                                ? positions[source_index]
+                                : make_float4(0, 0, 0, 0);
+        __syncthreads();
+
+        if (valid_target) {
+            const int remaining = particle_count - tile_begin;
+            const int tile_count = remaining < blockDim.x ? remaining : blockDim.x;
+            for (int source_in_tile = 0; source_in_tile < tile_count;
+                 ++source_in_tile) {
+                const int j = tile_begin + source_in_tile;
+                if (j == i) continue;
+                const float4 source = tile[source_in_tile];
+                const float dx = source.x - target.x;
+                const float dy = source.y - target.y;
+                const float dz = source.z - target.z;
+                const float distance_squared =
+                    dx * dx + dy * dy + dz * dz + softening_squared;
+                const float inverse_distance = rsqrtf(distance_squared);
+                const float scale = gravitational_constant * source.w *
+                                    inverse_distance * inverse_distance *
+                                    inverse_distance;
+                ax += dx * scale;
+                ay += dy * scale;
+                az += dz * scale;
+            }
+        }
+        __syncthreads();
+    }
+
+    if (valid_target) accelerations[i] = make_float3(ax, ay, az);
+}
+
 __global__ void euler_update_kernel(float4* positions,
                                     float3* velocities,
                                     const float3* accelerations,
@@ -165,11 +216,20 @@ float launch_force(const float4* positions,
                    float softening_squared,
                    int grid_size,
                    int block_size,
-                   const EventPair& events) {
+                   const EventPair& events,
+                   ForceKernel force_kernel) {
     NBODY_CUDA_CHECK(cudaEventRecord(events.start()));
-    force_naive_kernel<<<grid_size, block_size>>>(
-        positions, accelerations, particle_count, gravitational_constant,
-        softening_squared);
+    if (force_kernel == ForceKernel::Naive) {
+        force_naive_kernel<<<grid_size, block_size>>>(
+            positions, accelerations, particle_count, gravitational_constant,
+            softening_squared);
+    } else {
+        const std::size_t shared_bytes =
+            static_cast<std::size_t>(block_size) * sizeof(float4);
+        force_tiled_kernel<<<grid_size, block_size, shared_bytes>>>(
+            positions, accelerations, particle_count, gravitational_constant,
+            softening_squared);
+    }
     NBODY_CUDA_CHECK(cudaGetLastError());
     NBODY_CUDA_CHECK(cudaEventRecord(events.stop()));
     NBODY_CUDA_CHECK(cudaEventSynchronize(events.stop()));
@@ -198,9 +258,10 @@ void record_snapshot(const std::vector<float4>& positions,
 
 }  // namespace
 
-CpuRunResult simulate_cuda_naive(const std::vector<Particle>& initial_particles,
-                                 const Config& config,
-                                 int block_size) {
+static CpuRunResult simulate_cuda(const std::vector<Particle>& initial_particles,
+                                  const Config& config,
+                                  int block_size,
+                                  ForceKernel force_kernel) {
     if (initial_particles.empty()) throw std::invalid_argument("至少需要一个粒子");
     if (initial_particles.size() >
         static_cast<std::size_t>(std::numeric_limits<int>::max())) {
@@ -283,7 +344,7 @@ CpuRunResult simulate_cuda_naive(const std::vector<Particle>& initial_particles,
     result.force_ms += launch_force(
         device_positions.get(), device_accelerations.get(), n,
         gravitational_constant, softening_squared, grid_size, block_size,
-        force_events);
+        force_events, force_kernel);
     result.force_evaluations = 1;
     std::size_t next_record = 1;
 
@@ -297,7 +358,7 @@ CpuRunResult simulate_cuda_naive(const std::vector<Particle>& initial_particles,
                 result.force_ms += launch_force(
                     device_positions.get(), device_accelerations.get(), n,
                     gravitational_constant, softening_squared, grid_size,
-                    block_size, force_events);
+                    block_size, force_events, force_kernel);
                 ++result.force_evaluations;
             }
         } else {
@@ -308,7 +369,7 @@ CpuRunResult simulate_cuda_naive(const std::vector<Particle>& initial_particles,
             result.force_ms += launch_force(
                 device_positions.get(), device_accelerations.get(), n,
                 gravitational_constant, softening_squared, grid_size,
-                block_size, force_events);
+                block_size, force_events, force_kernel);
             ++result.force_evaluations;
             final_kick_kernel<<<grid_size, block_size>>>(
                 device_velocities.get(), device_accelerations.get(), n, dt);
@@ -354,6 +415,20 @@ CpuRunResult simulate_cuda_naive(const std::vector<Particle>& initial_particles,
     result.final_diagnostics = compute_diagnostics(
         result.particles, config.gravitational_constant, config.softening);
     return result;
+}
+
+CpuRunResult simulate_cuda_naive(const std::vector<Particle>& initial_particles,
+                                 const Config& config,
+                                 int block_size) {
+    return simulate_cuda(initial_particles, config, block_size,
+                         ForceKernel::Naive);
+}
+
+CpuRunResult simulate_cuda_tiled(const std::vector<Particle>& initial_particles,
+                                 const Config& config,
+                                 int block_size) {
+    return simulate_cuda(initial_particles, config, block_size,
+                         ForceKernel::Tiled);
 }
 
 }  // namespace nbody

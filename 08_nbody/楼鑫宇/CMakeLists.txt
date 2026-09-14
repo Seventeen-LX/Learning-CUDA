@@ -46,5 +46,5 @@ if(BUILD_TESTING)
 
     add_executable(nbody_cuda_tests tests/test_cuda_naive.cpp)
     target_link_libraries(nbody_cuda_tests PRIVATE nbody_core)
-    add_test(NAME cuda_naive_vs_cpu COMMAND nbody_cuda_tests)
+    add_test(NAME cuda_backends_vs_cpu COMMAND nbody_cuda_tests)
 endif()

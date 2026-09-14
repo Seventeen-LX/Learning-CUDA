@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <string>
 #include <vector>
 
 #include "nbody/config.hpp"
@@ -14,6 +15,8 @@ void write_run_outputs(const std::filesystem::path& output_dir,
                        const std::filesystem::path& input_path,
                        const Config& config,
                        const CpuRunResult& result,
-                       double pre_output_wall_ms);
+                       double pre_output_wall_ms,
+                       const std::string& backend = "cpu",
+                       const std::string& precision = "fp64");
 
 }  // namespace nbody

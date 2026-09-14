@@ -1,18 +1,19 @@
 # N 体引力模拟与可视化（楼鑫宇）
 
-当前阶段完成了可验证的 CPU FP64 基准，用于后续 CUDA 实现的正确性对照。CPU 版本支持题目规定的粒子输入、配置文件、Euler/Leapfrog 积分和二进制轨迹输出。
+当前阶段完成了 CPU FP64 参考后端和 CUDA FP32 朴素直接求和后端。两个后端支持题目规定的粒子输入、配置文件、Euler/Leapfrog 积分和二进制轨迹输出，并有固定小规模逐粒子对照测试。
 
 ## 已实现
 
 - 严格解析 `x y z vx vy vz mass` 粒子文件。
 - 严格解析 `dt`、`num_steps`、`record_interval`、`G`、`softening`、`integrator`。
 - CPU FP64 全粒子直接求和，复杂度为 O(N²)。
+- CUDA FP32 朴素全粒子直接求和，每个线程负责一个目标粒子。
 - 显式 Euler 和 Leapfrog KDK，默认使用 Leapfrog。
 - 输出粒子优先的 float32 轨迹 `[P,R,3]`。
 - 输出最终状态、初末守恒量、性能与元数据。
-- C++ 单元测试、双体轨道验证和固定随机种子的星团生成脚本。
+- C++ 单元测试、CPU/CUDA 逐粒子对照、双体轨道验证和固定随机种子的星团生成脚本。
 
-CUDA 后端尚未实现，CPU 的主要作用是给 GPU 版本提供可信参考。
+当前 CUDA 版本是正确性基线，尚未使用共享内存分块；CPU FP64 继续作为 GPU 版本的高精度参考。
 
 ## 构建
 
@@ -23,6 +24,23 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
+
+测试集合包含 CPU 核心公式、输入解析、轨迹哨兵往返、Leapfrog 步长收敛，以及 129 粒子 `cuda-naive` 与 CPU FP64 的逐粒子最终状态和轨迹对照。
+
+## CUDA 朴素版
+
+```bash
+./build/nbody \
+  --backend cuda-naive \
+  --block-size 128 \
+  --input data/two_body.txt \
+  --config configs/two_body.cfg \
+  --output results/two_body_cuda_naive
+
+python scripts/validate_two_body.py results/two_body_cuda_naive
+```
+
+`cuda-naive` 在 GPU 上以 FP32 保存位置、速度、质量和加速度，输出元数据会明确记录 `backend=cuda-naive` 与 `precision=fp32`。
 
 ## 双体实验
 
@@ -76,4 +94,4 @@ python scripts/generate_cluster.py --n 4096 --seed 42 --output data/cluster_4096
 
 ## 下一阶段
 
-先实现每线程负责一个目标粒子的 `cuda-naive`，用小规模输入逐粒子对照 CPU FP64；通过 Compute Sanitizer 后，再实现共享内存分块的 `cuda-tiled`。
+以当前 `cuda-naive` 为正确性和性能回归基线，实现共享内存分块的 `cuda-tiled`，随后扫描 block size，并在 4096 粒子、1000 步的相同输入和记录策略下比较 CPU、naive 与 tiled。

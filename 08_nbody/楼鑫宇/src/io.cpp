@@ -90,7 +90,9 @@ void write_run_outputs(const std::filesystem::path& output_dir,
                        const std::filesystem::path& input_path,
                        const Config& config,
                        const CpuRunResult& result,
-                       double pre_output_wall_ms) {
+                       double pre_output_wall_ms,
+                       const std::string& backend,
+                       const std::string& precision) {
     const std::size_t particle_count = result.particles.size();
     const std::size_t record_count = result.recorded_steps.size();
     if (particle_count > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max()) ||
@@ -152,8 +154,8 @@ void write_run_outputs(const std::filesystem::path& output_dir,
         if (!output) throw std::runtime_error("无法创建 performance.json");
         output << std::setprecision(17) << "{\n"
                << "  \"schema_version\": 1,\n"
-               << "  \"backend\": \"cpu\",\n"
-               << "  \"precision\": \"fp64\",\n"
+               << "  \"backend\": \"" << backend << "\",\n"
+               << "  \"precision\": \"" << precision << "\",\n"
                << "  \"particle_count\": " << particle_count << ",\n"
                << "  \"num_steps\": " << config.num_steps << ",\n"
                << "  \"force_evaluations\": " << result.force_evaluations << ",\n"
@@ -171,8 +173,8 @@ void write_run_outputs(const std::filesystem::path& output_dir,
         output << std::setprecision(17) << "{\n"
                << "  \"schema_version\": 1,\n"
                << "  \"status\": \"complete\",\n"
-               << "  \"backend\": \"cpu\",\n"
-               << "  \"precision\": \"fp64\",\n"
+               << "  \"backend\": \"" << backend << "\",\n"
+               << "  \"precision\": \"" << precision << "\",\n"
                << "  \"input_file\": \"" << input_path.filename().string() << "\",\n"
                << "  \"particle_count\": " << particle_count << ",\n"
                << "  \"record_count\": " << record_count << ",\n"

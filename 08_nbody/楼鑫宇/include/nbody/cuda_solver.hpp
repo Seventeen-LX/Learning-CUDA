@@ -1,0 +1,15 @@
+#pragma once
+
+#include <vector>
+
+#include "nbody/config.hpp"
+#include "nbody/cpu_solver.hpp"
+#include "nbody/types.hpp"
+
+namespace nbody {
+
+CpuRunResult simulate_cuda_naive(const std::vector<Particle>& initial_particles,
+                                 const Config& config,
+                                 int block_size = 128);
+
+}  // namespace nbody

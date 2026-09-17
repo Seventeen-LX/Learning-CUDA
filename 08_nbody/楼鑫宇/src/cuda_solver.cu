@@ -1,11 +1,13 @@
 #include "nbody/cuda_solver.hpp"
 
+#include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -15,7 +17,7 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
-enum class ForceKernel { Naive, Tiled };
+enum class ForceKernel { Naive, Tiled, MixedHalf2 };
 
 void check_cuda(cudaError_t status, const char* expression, int line) {
     if (status != cudaSuccess) {
@@ -47,6 +49,21 @@ public:
 
 private:
     T* data_ = nullptr;
+};
+
+struct HalfPositionBuffers {
+    explicit HalfPositionBuffers(std::size_t particle_count)
+        : pair_count((particle_count + 1) / 2),
+          x(pair_count),
+          y(pair_count),
+          z(pair_count),
+          mass(pair_count) {}
+
+    std::size_t pair_count;
+    DeviceBuffer<__half2> x;
+    DeviceBuffer<__half2> y;
+    DeviceBuffer<__half2> z;
+    DeviceBuffer<__half2> mass;
 };
 
 class EventPair {
@@ -153,6 +170,93 @@ __global__ void force_tiled_kernel(const float4* positions,
     if (valid_target) accelerations[i] = make_float3(ax, ay, az);
 }
 
+__global__ void pack_positions_half2_kernel(const float4* positions,
+                                            __half2* x,
+                                            __half2* y,
+                                            __half2* z,
+                                            __half2* mass,
+                                            int particle_count,
+                                            int pair_count) {
+    const int pair = blockIdx.x * blockDim.x + threadIdx.x;
+    if (pair >= pair_count) return;
+
+    const int first = pair * 2;
+    const int second = first + 1;
+    const float4 first_position = positions[first];
+    const float4 second_position =
+        second < particle_count ? positions[second] : make_float4(0, 0, 0, 0);
+    x[pair] = __floats2half2_rn(first_position.x, second_position.x);
+    y[pair] = __floats2half2_rn(first_position.y, second_position.y);
+    z[pair] = __floats2half2_rn(first_position.z, second_position.z);
+    mass[pair] = __floats2half2_rn(first_position.w, second_position.w);
+}
+
+__global__ void force_mixed_half2_kernel(const float4* positions,
+                                         const __half2* x,
+                                         const __half2* y,
+                                         const __half2* z,
+                                         const __half2* mass,
+                                         float3* accelerations,
+                                         int particle_count,
+                                         int pair_count,
+                                         float gravitational_constant,
+                                         float softening_squared) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= particle_count) return;
+
+    const float4 target = positions[i];
+    const __half2 target_x = __float2half2_rn(target.x);
+    const __half2 target_y = __float2half2_rn(target.y);
+    const __half2 target_z = __float2half2_rn(target.z);
+    const __half2 gravity = __float2half2_rn(gravitational_constant);
+    const __half2 epsilon_squared = __float2half2_rn(softening_squared);
+    float ax_even = 0.0f;
+    float ax_odd = 0.0f;
+    float ay_even = 0.0f;
+    float ay_odd = 0.0f;
+    float az_even = 0.0f;
+    float az_odd = 0.0f;
+
+    for (int pair = 0; pair < pair_count; ++pair) {
+        const __half2 dx = __hsub2(x[pair], target_x);
+        const __half2 dy = __hsub2(y[pair], target_y);
+        const __half2 dz = __hsub2(z[pair], target_z);
+        __half2 distance_squared = __hfma2(dx, dx, epsilon_squared);
+        distance_squared = __hfma2(dy, dy, distance_squared);
+        distance_squared = __hfma2(dz, dz, distance_squared);
+        __half2 source_mass = mass[pair];
+        const int first_source = pair * 2;
+        if (first_source == i) {
+            distance_squared = __halves2half2(
+                __float2half(1.0f), __high2half(distance_squared));
+            source_mass = __halves2half2(__float2half(0.0f),
+                                         __high2half(source_mass));
+        } else if (first_source + 1 == i) {
+            distance_squared = __halves2half2(
+                __low2half(distance_squared), __float2half(1.0f));
+            source_mass = __halves2half2(__low2half(source_mass),
+                                         __float2half(0.0f));
+        }
+        const __half2 inverse_distance = h2rsqrt(distance_squared);
+        __half2 scale = __hmul2(gravity, source_mass);
+        scale = __hmul2(scale, inverse_distance);
+        scale = __hmul2(scale, inverse_distance);
+        scale = __hmul2(scale, inverse_distance);
+
+        const float2 x_contribution = __half22float2(__hmul2(dx, scale));
+        const float2 y_contribution = __half22float2(__hmul2(dy, scale));
+        const float2 z_contribution = __half22float2(__hmul2(dz, scale));
+        ax_even += x_contribution.x;
+        ax_odd += x_contribution.y;
+        ay_even += y_contribution.x;
+        ay_odd += y_contribution.y;
+        az_even += z_contribution.x;
+        az_odd += z_contribution.y;
+    }
+    accelerations[i] = make_float3(ax_even + ax_odd, ay_even + ay_odd,
+                                   az_even + az_odd);
+}
+
 __global__ void euler_update_kernel(float4* positions,
                                     float3* velocities,
                                     const float3* accelerations,
@@ -217,17 +321,34 @@ float launch_force(const float4* positions,
                    int grid_size,
                    int block_size,
                    const EventPair& events,
-                   ForceKernel force_kernel) {
+                   ForceKernel force_kernel,
+                   HalfPositionBuffers* half_positions) {
     NBODY_CUDA_CHECK(cudaEventRecord(events.start()));
     if (force_kernel == ForceKernel::Naive) {
         force_naive_kernel<<<grid_size, block_size>>>(
             positions, accelerations, particle_count, gravitational_constant,
             softening_squared);
-    } else {
+    } else if (force_kernel == ForceKernel::Tiled) {
         const std::size_t shared_bytes =
             static_cast<std::size_t>(block_size) * sizeof(float4);
         force_tiled_kernel<<<grid_size, block_size, shared_bytes>>>(
             positions, accelerations, particle_count, gravitational_constant,
+            softening_squared);
+    } else {
+        if (half_positions == nullptr) {
+            throw std::logic_error("混合精度缓冲区未初始化");
+        }
+        const int pair_count = static_cast<int>(half_positions->pair_count);
+        const int pair_grid_size = (pair_count + block_size - 1) / block_size;
+        pack_positions_half2_kernel<<<pair_grid_size, block_size>>>(
+            positions, half_positions->x.get(), half_positions->y.get(),
+            half_positions->z.get(), half_positions->mass.get(), particle_count,
+            pair_count);
+        NBODY_CUDA_CHECK(cudaGetLastError());
+        force_mixed_half2_kernel<<<grid_size, block_size>>>(
+            positions, half_positions->x.get(), half_positions->y.get(),
+            half_positions->z.get(), half_positions->mass.get(), accelerations,
+            particle_count, pair_count, gravitational_constant,
             softening_squared);
     }
     NBODY_CUDA_CHECK(cudaGetLastError());
@@ -330,6 +451,10 @@ static CpuRunResult simulate_cuda(const std::vector<Particle>& initial_particles
     DeviceBuffer<float4> device_positions(particle_count);
     DeviceBuffer<float3> device_velocities(particle_count);
     DeviceBuffer<float3> device_accelerations(particle_count);
+    std::unique_ptr<HalfPositionBuffers> half_positions;
+    if (force_kernel == ForceKernel::MixedHalf2) {
+        half_positions = std::make_unique<HalfPositionBuffers>(particle_count);
+    }
     NBODY_CUDA_CHECK(cudaMemcpy(device_positions.get(), host_positions.data(),
                                 particle_count * sizeof(float4),
                                 cudaMemcpyHostToDevice));
@@ -348,13 +473,38 @@ static CpuRunResult simulate_cuda(const std::vector<Particle>& initial_particles
         !(softening_squared > 0.0f) || !(dt > 0.0f)) {
         throw std::runtime_error("配置参数无法用 CUDA FP32 表示");
     }
+    if (force_kernel == ForceKernel::MixedHalf2) {
+        const auto half_roundtrip = [](float value) {
+            return __half2float(__float2half_rn(value));
+        };
+        const float half_gravity = half_roundtrip(gravitational_constant);
+        const float half_softening_squared = half_roundtrip(softening_squared);
+        if (!std::isfinite(half_gravity) || !(half_gravity > 0.0f) ||
+            !std::isfinite(half_softening_squared) ||
+            !(half_softening_squared > 0.0f)) {
+            throw std::runtime_error("G 或 softening^2 无法用 CUDA FP16 表示");
+        }
+        for (const float4& position : host_positions) {
+            const float half_mass = half_roundtrip(position.w);
+            const float half_gravity_mass =
+                half_roundtrip(half_gravity * half_mass);
+            if (!std::isfinite(half_roundtrip(position.x)) ||
+                !std::isfinite(half_roundtrip(position.y)) ||
+                !std::isfinite(half_roundtrip(position.z)) ||
+                !std::isfinite(half_mass) || !(half_mass > 0.0f) ||
+                !std::isfinite(half_gravity_mass) ||
+                !(half_gravity_mass > 0.0f)) {
+                throw std::runtime_error("初态位置、质量或 G×质量无法用 CUDA FP16 表示");
+            }
+        }
+    }
 
     EventPair force_events;
     const auto simulation_begin = Clock::now();
     result.force_ms += launch_force(
         device_positions.get(), device_accelerations.get(), n,
         gravitational_constant, softening_squared, grid_size, block_size,
-        force_events, force_kernel);
+        force_events, force_kernel, half_positions.get());
     result.force_evaluations = 1;
     std::size_t next_record = 1;
 
@@ -368,7 +518,8 @@ static CpuRunResult simulate_cuda(const std::vector<Particle>& initial_particles
                 result.force_ms += launch_force(
                     device_positions.get(), device_accelerations.get(), n,
                     gravitational_constant, softening_squared, grid_size,
-                    block_size, force_events, force_kernel);
+                    block_size, force_events, force_kernel,
+                    half_positions.get());
                 ++result.force_evaluations;
             }
         } else {
@@ -379,7 +530,7 @@ static CpuRunResult simulate_cuda(const std::vector<Particle>& initial_particles
             result.force_ms += launch_force(
                 device_positions.get(), device_accelerations.get(), n,
                 gravitational_constant, softening_squared, grid_size,
-                block_size, force_events, force_kernel);
+                block_size, force_events, force_kernel, half_positions.get());
             ++result.force_evaluations;
             final_kick_kernel<<<grid_size, block_size>>>(
                 device_velocities.get(), device_accelerations.get(), n, dt);
@@ -443,6 +594,14 @@ CpuRunResult simulate_cuda_tiled(const std::vector<Particle>& initial_particles,
                                  const RunOptions& options) {
     return simulate_cuda(initial_particles, config, block_size,
                          ForceKernel::Tiled, options);
+}
+
+CpuRunResult simulate_cuda_mixed(const std::vector<Particle>& initial_particles,
+                                 const Config& config,
+                                 int block_size,
+                                 const RunOptions& options) {
+    return simulate_cuda(initial_particles, config, block_size,
+                         ForceKernel::MixedHalf2, options);
 }
 
 }  // namespace nbody

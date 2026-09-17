@@ -23,7 +23,7 @@ struct Arguments {
 void print_usage(const char* program) {
     std::cerr << "用法: " << program
               << " --input particles.txt --config simulation.cfg --output results/run"
-              << " [--backend cpu|cuda-naive|cuda-tiled]"
+              << " [--backend cpu|cuda-naive|cuda-tiled|cuda-mixed]"
               << " [--block-size 64|128|256|512]"
               << " [--record on|off] [--diagnostics final|off]\n";
 }
@@ -37,9 +37,10 @@ Arguments parse_arguments(int argc, char** argv) {
             arguments.backend = argv[i];
             if (arguments.backend != "cpu" &&
                 arguments.backend != "cuda-naive" &&
-                arguments.backend != "cuda-tiled") {
+                arguments.backend != "cuda-tiled" &&
+                arguments.backend != "cuda-mixed") {
                 throw std::runtime_error(
-                    "--backend 只支持 cpu、cuda-naive 或 cuda-tiled");
+                    "--backend 只支持 cpu、cuda-naive、cuda-tiled 或 cuda-mixed");
             }
             continue;
         }
@@ -115,11 +116,16 @@ int main(int argc, char** argv) {
                                                 arguments.block_size,
                                                 arguments.run_options);
             precision = "fp32";
-        } else {
+        } else if (arguments.backend == "cuda-tiled") {
             result = nbody::simulate_cuda_tiled(particles, config,
                                                 arguments.block_size,
                                                 arguments.run_options);
             precision = "fp32";
+        } else {
+            result = nbody::simulate_cuda_mixed(particles, config,
+                                                arguments.block_size,
+                                                arguments.run_options);
+            precision = "fp16-pair-fp32-accumulation";
         }
         const double before_write_ms = std::chrono::duration<double, std::milli>(
             Clock::now() - wall_begin).count();

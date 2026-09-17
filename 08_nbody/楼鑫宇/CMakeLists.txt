@@ -47,4 +47,8 @@ if(BUILD_TESTING)
     add_executable(nbody_cuda_tests tests/test_cuda_naive.cpp)
     target_link_libraries(nbody_cuda_tests PRIVATE nbody_core)
     add_test(NAME cuda_backends_vs_cpu COMMAND nbody_cuda_tests)
+
+    add_executable(nbody_cuda_mixed_tests tests/test_cuda_mixed.cpp)
+    target_link_libraries(nbody_cuda_mixed_tests PRIVATE nbody_core)
+    add_test(NAME cuda_mixed_4096_vs_cpu COMMAND nbody_cuda_mixed_tests)
 endif()

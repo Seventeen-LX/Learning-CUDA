@@ -16,5 +16,9 @@ CpuRunResult simulate_cuda_tiled(const std::vector<Particle>& initial_particles,
                                  const Config& config,
                                  int block_size = 128,
                                  const RunOptions& options = {});
+CpuRunResult simulate_cuda_mixed(const std::vector<Particle>& initial_particles,
+                                 const Config& config,
+                                 int block_size = 128,
+                                 const RunOptions& options = {});
 
 }  // namespace nbody

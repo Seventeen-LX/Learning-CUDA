@@ -1,6 +1,6 @@
 # N 体引力模拟与可视化（楼鑫宇）
 
-当前阶段完成了 CPU FP64 参考后端，以及 CUDA FP32 的朴素和共享内存分块后端。三个后端支持题目规定的粒子输入、配置文件、Euler/Leapfrog 积分和二进制轨迹输出，并有固定小规模逐粒子对照测试。
+当前阶段完成了 CPU FP64 参考后端、CUDA FP32 朴素和共享内存分块后端，以及实验性的 CUDA 混合精度后端。各后端支持题目规定的粒子输入、配置文件、Euler/Leapfrog 积分和二进制轨迹输出。
 
 ## 已实现
 
@@ -9,12 +9,13 @@
 - CPU FP64 全粒子直接求和，复杂度为 O(N²)。
 - CUDA FP32 朴素全粒子直接求和，每个线程负责一个目标粒子。
 - CUDA FP32 共享内存分块直接求和，块内线程复用源粒子 tile。
+- CUDA 混合精度直接求和：FP16x2 成对计算相互作用，FP32 保存状态和累加加速度。
 - 显式 Euler 和 Leapfrog KDK，默认使用 Leapfrog。
 - 输出粒子优先的 float32 轨迹 `[P,R,3]`。
 - 输出最终状态、初末守恒量、性能与元数据。
 - C++ 单元测试、CPU/CUDA 逐粒子对照、双体轨道验证和固定随机种子的星团生成脚本。
 
-`cuda-naive` 是正确性和性能回归基线，`cuda-tiled` 是当前优化版本；CPU FP64 继续作为 GPU 版本的高精度参考。
+`cuda-naive` 是正确性和性能回归基线；`cuda-tiled` 和 `cuda-mixed` 是优化实验，CPU FP64 是高精度参考。`cuda-mixed` 的精度与速度结论目前只覆盖固定的 4096 粒子星团场景，不应推广到其他规模或参数。
 
 ## 构建
 
@@ -26,7 +27,7 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-测试集合包含 CPU 核心公式、输入解析、轨迹哨兵往返、Leapfrog 步长收敛，以及 129 粒子 CUDA 后端与 CPU FP64 的逐粒子最终状态和轨迹对照。分块测试覆盖 64、128、256、512 四种 block size 和非整块尾部。
+测试集合包含 CPU 核心公式、输入解析、轨迹哨兵往返、Leapfrog 步长收敛，129 粒子 FP32 CUDA 后端与 CPU FP64 的逐粒子对照，以及 4096 粒子混合精度回归测试。分块测试覆盖 64、128、256、512 四种 block size 和非整块尾部。
 
 ## CUDA 朴素版
 
@@ -59,6 +60,23 @@ python scripts/validate_two_body.py results/two_body_cuda_naive
 尾块中的无效目标线程仍参与两次块同步，只有有效目标线程累加和写回，避免在 `__syncthreads()` 之前提前退出造成死锁。
 
 RTX 5090 上的 block size 扫描、CPU/naive/tiled 对照和复现方式见 [`docs/cuda-baseline.md`](docs/cuda-baseline.md)。
+
+## CUDA 混合精度实验（仅验证 4096 粒子）
+
+```bash
+./build/nbody \
+  --backend cuda-mixed \
+  --block-size 64 \
+  --input data/cluster_4096.txt \
+  --config configs/cpu_4096.cfg \
+  --output results/cluster_4096_cuda_mixed
+
+python scripts/compare_runs.py \
+  results/cluster_4096_cpu_1000 \
+  results/cluster_4096_cuda_mixed
+```
+
+在 RTX 5090 上，对固定 4096 粒子、1000 步星团，`cuda-mixed` 相对 CPU FP64 的最终位置/速度整体相对 L2 误差分别为约 0.012%/0.014%；与 `cuda-naive` 的配对计时相比，力计算为 1.315 倍速度（耗时下降约 24%）。FP16 仅用于两粒子一组的力计算；位置、速度与加速度累加仍为 FP32，不能理解成全程 FP16。实验方法、分位数误差、性能剖析和适用范围见 [`docs/fp16-4096.md`](docs/fp16-4096.md)。
 
 ## 双体实验
 
@@ -117,4 +135,4 @@ Nsight Systems 时间线、轨迹输出开销、4096 粒子星团动画及小天
 
 ## 下一阶段
 
-根据时间线结果，后续优化应优先继续降低 O(N²) 力计算成本；积分 kernel 融合或 CUDA Graphs 可作为减少短任务启动开销的补充方向。
+后续可尝试降低 O(N²) 力计算成本；积分 kernel 融合或 CUDA Graphs 可作为减少短任务启动开销的补充方向。混合精度在其他规模、初态和参数下的误差边界尚未验证。

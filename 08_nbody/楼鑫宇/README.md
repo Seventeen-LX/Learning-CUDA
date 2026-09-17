@@ -1,6 +1,6 @@
 # N 体引力模拟与可视化（楼鑫宇）
 
-当前阶段完成了 CPU FP64 参考后端、CUDA FP32 朴素和共享内存分块后端，以及实验性的 CUDA 混合精度后端。各后端支持题目规定的粒子输入、配置文件、Euler/Leapfrog 积分和二进制轨迹输出。
+当前阶段完成了 CPU FP64 参考后端、CUDA FP32 朴素和共享内存分块后端、实验性的混合精度后端，以及面向 65536 粒子的 CUDA Barnes–Hut 后端。各后端支持题目规定的粒子输入、配置文件、Euler/Leapfrog 积分和二进制轨迹输出。
 
 ## 已实现
 
@@ -10,12 +10,13 @@
 - CUDA FP32 朴素全粒子直接求和，每个线程负责一个目标粒子。
 - CUDA FP32 共享内存分块直接求和，块内线程复用源粒子 tile。
 - CUDA 混合精度直接求和：FP16x2 成对计算相互作用，FP32 保存状态和累加加速度。
+- CUDA Barnes–Hut：GPU 上每次重建六层八叉树，远场用质量与质心近似，近场叶内直接求和。
 - 显式 Euler 和 Leapfrog KDK，默认使用 Leapfrog。
 - 输出粒子优先的 float32 轨迹 `[P,R,3]`。
 - 输出最终状态、初末守恒量、性能与元数据。
 - C++ 单元测试、CPU/CUDA 逐粒子对照、双体轨道验证和固定随机种子的星团生成脚本。
 
-`cuda-naive` 是正确性和性能回归基线；`cuda-tiled` 和 `cuda-mixed` 是优化实验，CPU FP64 是高精度参考。`cuda-mixed` 的精度与速度结论目前只覆盖固定的 4096 粒子星团场景，不应推广到其他规模或参数。
+`cuda-naive` 是正确性和性能回归基线；`cuda-tiled`、`cuda-mixed` 和 `cuda-bh` 是优化实验，CPU FP64 是小规模高精度参考。4096 粒子建议继续使用直接法；65536 粒子可选择 `cuda-bh`。性能与误差结论只覆盖各自实测的星团场景，不应推广到其他规模或参数。
 
 ## 构建
 
@@ -27,7 +28,7 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-测试集合包含 CPU 核心公式、输入解析、轨迹哨兵往返、Leapfrog 步长收敛，129 粒子 FP32 CUDA 后端与 CPU FP64 的逐粒子对照，以及 4096 粒子混合精度回归测试。分块测试覆盖 64、128、256、512 四种 block size 和非整块尾部。
+测试集合包含 CPU 核心公式、输入解析、轨迹哨兵往返、Leapfrog 步长收敛，129 粒子 FP32 CUDA 后端与 CPU FP64 的逐粒子对照、4096 粒子混合精度回归，以及 65536 粒子 Barnes–Hut 100 步与直接法对照。分块测试覆盖 64、128、256、512 四种 block size 和非整块尾部。
 
 ## CUDA 朴素版
 
@@ -77,6 +78,18 @@ python scripts/compare_runs.py \
 ```
 
 在 RTX 5090 上，对固定 4096 粒子、1000 步星团，`cuda-mixed` 相对 CPU FP64 的最终位置/速度整体相对 L2 误差分别为约 0.012%/0.014%；与 `cuda-naive` 的配对计时相比，力计算为 1.315 倍速度（耗时下降约 24%）。FP16 仅用于两粒子一组的力计算；位置、速度与加速度累加仍为 FP32，不能理解成全程 FP16。实验方法、分位数误差、性能剖析和适用范围见 [`docs/fp16-4096.md`](docs/fp16-4096.md)。
+
+## 65536 粒子 Barnes–Hut 实验
+
+```bash
+python scripts/generate_cluster.py --n 65536 --seed 42 --output data/cluster_65536.txt
+./build/nbody \
+  --backend cuda-bh --theta 0.5 --block-size 128 \
+  --input data/cluster_65536.txt --config configs/cpu_4096.cfg \
+  --diagnostics off --output results/cluster_65536_cuda_bh
+```
+
+以上命令完成 65536 粒子、1000 步模拟并生成轨迹。`--diagnostics off` 只关闭末态 CPU 全对势能诊断，不影响模拟或轨迹。该输入上，`cuda-bh` 相对同为 FP32 的 `cuda-naive`，包含每步建树的模拟时间中位数由 3662 ms 降至 2071 ms，约 **1.77 倍速度**；最终位置/速度整体相对 L2 差异约 0.59%/0.75%。4096 粒子上树算法反而更慢，因此不切换。实现细节、完整条件、误差及限制见 [`docs/bh-65536.md`](docs/bh-65536.md)。`theta` 会写入元数据与性能日志。
 
 ## 双体实验
 
@@ -135,4 +148,4 @@ Nsight Systems 时间线、轨迹输出开销、4096 粒子星团动画及小天
 
 ## 下一阶段
 
-后续可尝试降低 O(N²) 力计算成本；积分 kernel 融合或 CUDA Graphs 可作为减少短任务启动开销的补充方向。混合精度在其他规模、初态和参数下的误差边界尚未验证。
+树遍历仍是 65536 粒子路径的主要成本，可继续研究空间排序与更高效的遍历。混合精度与 Barnes–Hut 在其他规模、初态和参数下的误差边界尚未验证。

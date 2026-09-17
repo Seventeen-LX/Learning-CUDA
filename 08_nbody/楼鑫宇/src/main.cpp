@@ -1,6 +1,8 @@
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <string>
 
@@ -17,14 +19,17 @@ struct Arguments {
     std::filesystem::path output;
     std::string backend = "cpu";
     int block_size = 128;
+    double theta = 0.5;
+    bool theta_supplied = false;
     nbody::RunOptions run_options;
 };
 
 void print_usage(const char* program) {
     std::cerr << "用法: " << program
               << " --input particles.txt --config simulation.cfg --output results/run"
-              << " [--backend cpu|cuda-naive|cuda-tiled|cuda-mixed]"
+              << " [--backend cpu|cuda-naive|cuda-tiled|cuda-mixed|cuda-bh]"
               << " [--block-size 64|128|256|512]"
+              << " [--theta 0.5 (仅 cuda-bh)]"
               << " [--record on|off] [--diagnostics final|off]\n";
 }
 
@@ -38,9 +43,10 @@ Arguments parse_arguments(int argc, char** argv) {
             if (arguments.backend != "cpu" &&
                 arguments.backend != "cuda-naive" &&
                 arguments.backend != "cuda-tiled" &&
-                arguments.backend != "cuda-mixed") {
+                arguments.backend != "cuda-mixed" &&
+                arguments.backend != "cuda-bh") {
                 throw std::runtime_error(
-                    "--backend 只支持 cpu、cuda-naive、cuda-tiled 或 cuda-mixed");
+                    "--backend 只支持 cpu、cuda-naive、cuda-tiled、cuda-mixed 或 cuda-bh");
             }
             continue;
         }
@@ -57,6 +63,22 @@ Arguments parse_arguments(int argc, char** argv) {
                  arguments.block_size != 256 && arguments.block_size != 512)) {
                 throw std::runtime_error("--block-size 只支持 64、128、256 或 512");
             }
+            continue;
+        }
+        if (option == "--theta") {
+            if (++i >= argc) throw std::runtime_error("--theta 缺少值");
+            std::size_t used = 0;
+            try {
+                arguments.theta = std::stod(argv[i], &used);
+            } catch (const std::exception&) {
+                throw std::runtime_error("--theta 必须是正数");
+            }
+            if (used != std::string(argv[i]).size() ||
+                !std::isfinite(arguments.theta) ||
+                !(arguments.theta > 0.0)) {
+                throw std::runtime_error("--theta 必须是有限正数");
+            }
+            arguments.theta_supplied = true;
             continue;
         }
         if (option == "--record") {
@@ -87,6 +109,9 @@ Arguments parse_arguments(int argc, char** argv) {
     }
     if (arguments.input.empty() || arguments.config.empty() || arguments.output.empty()) {
         throw std::runtime_error("必须提供 --input、--config 和 --output");
+    }
+    if (arguments.theta_supplied && arguments.backend != "cuda-bh") {
+        throw std::runtime_error("--theta 只适用于 cuda-bh");
     }
     return arguments;
 }
@@ -121,16 +146,25 @@ int main(int argc, char** argv) {
                                                 arguments.block_size,
                                                 arguments.run_options);
             precision = "fp32";
-        } else {
+        } else if (arguments.backend == "cuda-mixed") {
             result = nbody::simulate_cuda_mixed(particles, config,
                                                 arguments.block_size,
                                                 arguments.run_options);
             precision = "fp16-pair-fp32-accumulation";
+        } else {
+            result = nbody::simulate_cuda_bh(particles, config,
+                                             arguments.block_size,
+                                             arguments.theta,
+                                             arguments.run_options);
+            precision = "fp32";
         }
         const double before_write_ms = std::chrono::duration<double, std::milli>(
             Clock::now() - wall_begin).count();
         nbody::write_run_outputs(arguments.output, arguments.input, config, result,
-                                 before_write_ms, arguments.backend, precision);
+                                 before_write_ms, arguments.backend, precision,
+                                 arguments.backend == "cuda-bh"
+                                     ? std::optional<double>(arguments.theta)
+                                     : std::nullopt);
         std::cout << arguments.backend << ' ' << precision << " 模拟完成\n"
                   << "粒子: " << particles.size() << ", 步数: " << config.num_steps
                   << ", 积分器: " << nbody::to_string(config.integrator) << '\n'

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -17,6 +18,7 @@ void write_run_outputs(const std::filesystem::path& output_dir,
                        const CpuRunResult& result,
                        double pre_output_wall_ms,
                        const std::string& backend = "cpu",
-                       const std::string& precision = "fp64");
+                       const std::string& precision = "fp64",
+                       std::optional<double> theta = std::nullopt);
 
 }  // namespace nbody

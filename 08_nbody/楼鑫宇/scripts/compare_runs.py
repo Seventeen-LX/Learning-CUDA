@@ -54,11 +54,6 @@ def compare(reference_dir: Path, candidate_dir: Path):
     if not np.array_equal(reference_state[:, 0], candidate_state[:, 0]):
         raise ValueError("particle IDs differ")
 
-    reference_trajectory = load_trajectory(reference_dir)
-    candidate_trajectory = load_trajectory(candidate_dir)
-    if reference_trajectory.shape != candidate_trajectory.shape:
-        raise ValueError("trajectory shapes differ")
-
     reference_metadata = json.loads(
         (reference_dir / "metadata.json").read_text(encoding="utf-8")
     )
@@ -70,14 +65,29 @@ def compare(reference_dir: Path, candidate_dir: Path):
             raise ValueError(f"metadata {key} differs")
     if reference_metadata["recorded_steps"] != candidate_metadata["recorded_steps"]:
         raise ValueError("recorded steps differ")
+    if reference_metadata["record_enabled"] != candidate_metadata["record_enabled"]:
+        raise ValueError("recording modes differ")
 
-    trajectory_difference = candidate_trajectory - reference_trajectory
-    frame_denominator = np.maximum(
-        np.linalg.norm(reference_trajectory, axis=(0, 2)), 1.0e-12
-    )
-    frame_relative_l2 = (
-        np.linalg.norm(trajectory_difference, axis=(0, 2)) / frame_denominator
-    )
+    trajectory_metrics = None
+    trajectory_finite = True
+    if reference_metadata["record_enabled"]:
+        reference_trajectory = load_trajectory(reference_dir)
+        candidate_trajectory = load_trajectory(candidate_dir)
+        if reference_trajectory.shape != candidate_trajectory.shape:
+            raise ValueError("trajectory shapes differ")
+        trajectory_difference = candidate_trajectory - reference_trajectory
+        frame_denominator = np.maximum(
+            np.linalg.norm(reference_trajectory, axis=(0, 2)), 1.0e-12
+        )
+        frame_relative_l2 = (
+            np.linalg.norm(trajectory_difference, axis=(0, 2)) / frame_denominator
+        )
+        trajectory_metrics = {
+            **vector_metrics(reference_trajectory, candidate_trajectory),
+            "max_frame_relative_l2": float(np.max(frame_relative_l2)),
+            "final_frame_relative_l2": float(frame_relative_l2[-1]),
+        }
+        trajectory_finite = bool(np.isfinite(candidate_trajectory).all())
     candidate_performance = json.loads(
         (candidate_dir / "performance.json").read_text(encoding="utf-8")
     )
@@ -85,15 +95,11 @@ def compare(reference_dir: Path, candidate_dir: Path):
         "candidate": str(candidate_dir),
         "all_values_finite": bool(
             np.isfinite(candidate_state).all()
-            and np.isfinite(candidate_trajectory).all()
+            and trajectory_finite
         ),
         "position": vector_metrics(reference_state[:, 1:4], candidate_state[:, 1:4]),
         "velocity": vector_metrics(reference_state[:, 4:7], candidate_state[:, 4:7]),
-        "trajectory": {
-            **vector_metrics(reference_trajectory, candidate_trajectory),
-            "max_frame_relative_l2": float(np.max(frame_relative_l2)),
-            "final_frame_relative_l2": float(frame_relative_l2[-1]),
-        },
+        "trajectory": trajectory_metrics,
         "relative_energy_error": candidate_performance.get("relative_energy_error"),
         "absolute_momentum_error": candidate_performance.get("absolute_momentum_error"),
         "force_total_ms": candidate_performance["force_total_ms"],

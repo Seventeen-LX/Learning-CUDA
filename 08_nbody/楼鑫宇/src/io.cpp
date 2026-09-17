@@ -92,7 +92,8 @@ void write_run_outputs(const std::filesystem::path& output_dir,
                        const CpuRunResult& result,
                        double pre_output_wall_ms,
                        const std::string& backend,
-                       const std::string& precision) {
+                       const std::string& precision,
+                       std::optional<double> theta) {
     const std::size_t particle_count = result.particles.size();
     const std::size_t record_count = result.recorded_steps.size();
     if (particle_count > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max()) ||
@@ -164,6 +165,10 @@ void write_run_outputs(const std::filesystem::path& output_dir,
                << "  \"schema_version\": 1,\n"
                << "  \"backend\": \"" << backend << "\",\n"
                << "  \"precision\": \"" << precision << "\",\n"
+               << "  \"theta\": ";
+        if (theta) output << *theta;
+        else output << "null";
+        output << ",\n"
                << "  \"record_enabled\": "
                << (result.record_enabled ? "true" : "false") << ",\n"
                << "  \"diagnostics_mode\": \""
@@ -193,6 +198,10 @@ void write_run_outputs(const std::filesystem::path& output_dir,
                << "  \"status\": \"complete\",\n"
                << "  \"backend\": \"" << backend << "\",\n"
                << "  \"precision\": \"" << precision << "\",\n"
+               << "  \"theta\": ";
+        if (theta) output << *theta;
+        else output << "null";
+        output << ",\n"
                << "  \"record_enabled\": "
                << (result.record_enabled ? "true" : "false") << ",\n"
                << "  \"diagnostics_mode\": \""

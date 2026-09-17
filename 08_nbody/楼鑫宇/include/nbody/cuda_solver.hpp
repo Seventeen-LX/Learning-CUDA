@@ -20,5 +20,10 @@ CpuRunResult simulate_cuda_mixed(const std::vector<Particle>& initial_particles,
                                  const Config& config,
                                  int block_size = 128,
                                  const RunOptions& options = {});
+CpuRunResult simulate_cuda_bh(const std::vector<Particle>& initial_particles,
+                              const Config& config,
+                              int block_size = 128,
+                              double theta = 0.5,
+                              const RunOptions& options = {});
 
 }  // namespace nbody

@@ -69,6 +69,10 @@ python3 -m venv --system-site-packages /data/nbody-port/.venv
 /data/nbody-port/.venv/bin/python -m pip install matplotlib
 /data/nbody-port/.venv/bin/python scripts/visualize.py \
   results/cluster_4096_maca --max-particles 4096
+
+/data/nbody-port/.venv/bin/python scripts/visualize.py \
+  results/cluster_65536_maca_2000 --max-particles 65536 \
+  --output results/cluster_65536_maca_2000/trajectory_xy_all_particles.mp4
 ```
 
 ## CUDA 朴素版

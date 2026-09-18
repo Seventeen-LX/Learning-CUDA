@@ -130,6 +130,16 @@ int main(int argc, char** argv) {
     try {
         const auto wall_begin = Clock::now();
         const Arguments arguments = parse_arguments(argc, argv);
+#ifndef NBODY_WITH_CUDA
+        if (arguments.backend.rfind("cuda-", 0) == 0) {
+            throw std::runtime_error("当前构建未启用 CUDA 后端");
+        }
+#endif
+#ifndef NBODY_WITH_MACA
+        if (arguments.backend.rfind("maca-", 0) == 0) {
+            throw std::runtime_error("当前构建未启用 MACA 后端");
+        }
+#endif
         if (std::filesystem::exists(arguments.output)) {
             throw std::runtime_error("输出目录已存在，请使用新目录: " +
                                      arguments.output.string());

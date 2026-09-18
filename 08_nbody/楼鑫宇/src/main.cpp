@@ -8,7 +8,12 @@
 
 #include "nbody/config.hpp"
 #include "nbody/cpu_solver.hpp"
+#ifdef NBODY_WITH_CUDA
 #include "nbody/cuda_solver.hpp"
+#endif
+#ifdef NBODY_WITH_MACA
+#include "nbody/maca_solver.hpp"
+#endif
 #include "nbody/io.hpp"
 
 namespace {
@@ -27,7 +32,7 @@ struct Arguments {
 void print_usage(const char* program) {
     std::cerr << "用法: " << program
               << " --input particles.txt --config simulation.cfg --output results/run"
-              << " [--backend cpu|cuda-naive|cuda-tiled|cuda-mixed|cuda-bh]"
+              << " [--backend cpu|cuda-naive|cuda-tiled|cuda-mixed|cuda-bh|maca-naive|maca-tiled]"
               << " [--block-size 64|128|256|512]"
               << " [--theta 0.5 (仅 cuda-bh)]"
               << " [--record on|off] [--diagnostics final|off]\n";
@@ -44,9 +49,11 @@ Arguments parse_arguments(int argc, char** argv) {
                 arguments.backend != "cuda-naive" &&
                 arguments.backend != "cuda-tiled" &&
                 arguments.backend != "cuda-mixed" &&
-                arguments.backend != "cuda-bh") {
+                arguments.backend != "cuda-bh" &&
+                arguments.backend != "maca-naive" &&
+                arguments.backend != "maca-tiled") {
                 throw std::runtime_error(
-                    "--backend 只支持 cpu、cuda-naive、cuda-tiled、cuda-mixed 或 cuda-bh");
+                    "未知的 --backend；支持 cpu、cuda-* 和 maca-*");
             }
             continue;
         }
@@ -136,6 +143,7 @@ int main(int argc, char** argv) {
             result = nbody::simulate_cpu(particles, config,
                                          arguments.run_options);
             precision = "fp64";
+#ifdef NBODY_WITH_CUDA
         } else if (arguments.backend == "cuda-naive") {
             result = nbody::simulate_cuda_naive(particles, config,
                                                 arguments.block_size,
@@ -151,12 +159,27 @@ int main(int argc, char** argv) {
                                                 arguments.block_size,
                                                 arguments.run_options);
             precision = "fp16-pair-fp32-accumulation";
-        } else {
+        } else if (arguments.backend == "cuda-bh") {
             result = nbody::simulate_cuda_bh(particles, config,
                                              arguments.block_size,
                                              arguments.theta,
                                              arguments.run_options);
             precision = "fp32";
+#endif
+#ifdef NBODY_WITH_MACA
+        } else if (arguments.backend == "maca-naive") {
+            result = nbody::simulate_maca_naive(particles, config,
+                                                arguments.block_size,
+                                                arguments.run_options);
+            precision = "fp32";
+        } else if (arguments.backend == "maca-tiled") {
+            result = nbody::simulate_maca_tiled(particles, config,
+                                                arguments.block_size,
+                                                arguments.run_options);
+            precision = "fp32";
+#endif
+        } else {
+            throw std::runtime_error("当前构建未启用后端: " + arguments.backend);
         }
         const double before_write_ms = std::chrono::duration<double, std::milli>(
             Clock::now() - wall_begin).count();

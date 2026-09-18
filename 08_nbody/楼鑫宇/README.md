@@ -1,6 +1,6 @@
 # N 体引力模拟与可视化（楼鑫宇）
 
-当前阶段完成了 CPU FP64 参考后端、CUDA FP32 朴素和共享内存分块后端、实验性的混合精度后端，以及面向 65536 粒子的 CUDA Barnes–Hut 后端。各后端支持题目规定的粒子输入、配置文件、Euler/Leapfrog 积分和二进制轨迹输出。
+当前阶段完成了 CPU FP64 参考后端、CUDA FP32 朴素和共享内存分块后端、实验性的混合精度后端，以及面向 65536 粒子的 CUDA Barnes–Hut 后端。另提供沐曦 MetaX C500 的 MACA FP32 朴素与分块后端。各后端支持题目规定的粒子输入、配置文件、Euler/Leapfrog 积分和二进制轨迹输出。
 
 ## 已实现
 
@@ -9,6 +9,7 @@
 - CPU FP64 全粒子直接求和，复杂度为 O(N²)。
 - CUDA FP32 朴素全粒子直接求和，每个线程负责一个目标粒子。
 - CUDA FP32 共享内存分块直接求和，块内线程复用源粒子 tile。
+- 沐曦 MACA FP32 朴素和共享内存分块直接求和，可在 C500 上运行。
 - CUDA 混合精度直接求和：FP16x2 成对计算相互作用，FP32 保存状态和累加加速度。
 - CUDA Barnes–Hut：GPU 上每次重建六层八叉树，远场用质量与质心近似，近场叶内直接求和。
 - 显式 Euler 和 Leapfrog KDK，默认使用 Leapfrog。
@@ -17,6 +18,8 @@
 - C++ 单元测试、CPU/CUDA 逐粒子对照、双体轨道验证和固定随机种子的星团生成脚本。
 
 `cuda-naive` 是正确性和性能回归基线；`cuda-tiled`、`cuda-mixed` 和 `cuda-bh` 是优化实验，CPU FP64 是小规模高精度参考。4096 粒子建议继续使用直接法；65536 粒子可选择 `cuda-bh`。性能与误差结论只覆盖各自实测的星团场景，不应推广到其他规模或参数。
+
+构建时通过 `NBODY_GPU_BACKEND=CUDA|MACA|NONE` 选择平台。CUDA 和 MACA 源码不会在同一构建中混编；`NONE` 只构建 CPU 后端。
 
 ## 构建
 
@@ -29,6 +32,44 @@ ctest --test-dir build --output-on-failure
 ```
 
 测试集合包含 CPU 核心公式、输入解析、轨迹哨兵往返、Leapfrog 步长收敛，129 粒子 FP32 CUDA 后端与 CPU FP64 的逐粒子对照、4096 粒子混合精度回归，以及 65536 粒子 Barnes–Hut 100 步与直接法对照。分块测试覆盖 64、128、256、512 四种 block size 和非整块尾部。
+
+## 沐曦 MetaX C500 / MACA
+
+在安装了 MACA SDK 的 C500 服务器上，使用 `mxcc` 构建原生 MACA 后端：
+
+```bash
+cd /data/nbody-port/08_nbody/楼鑫宇
+cmake -S . -B build-maca -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DNBODY_GPU_BACKEND=MACA \
+  -DCMAKE_CXX_COMPILER=/opt/maca/mxgpu_llvm/bin/mxcc
+cmake --build build-maca
+ctest --test-dir build-maca --output-on-failure
+
+python3 scripts/generate_cluster.py --n 4096 --seed 42 \
+  --output data/cluster_4096.txt
+./build-maca/nbody --backend maca-naive --block-size 128 \
+  --input data/cluster_4096.txt --config configs/cpu_4096.cfg \
+  --diagnostics off --output results/cluster_4096_maca
+
+python3 scripts/generate_cluster.py --n 65536 --seed 42 \
+  --output data/cluster_65536.txt
+./build-maca/nbody --backend maca-naive --block-size 128 \
+  --input data/cluster_65536.txt --config configs/cluster_65536_2000.cfg \
+  --diagnostics off --output results/cluster_65536_maca_2000
+```
+
+`maca-naive` 和 `maca-tiled` 都是 FP32 的全粒子直接求和，不是 Barnes–Hut。MACA 构建仍包含 CPU FP64 后端与相同的轨迹、最终状态和性能日志格式；CUDA 混合精度和 Barnes–Hut 仅在 CUDA 构建中提供。已有输出目录不会被覆盖，请为重复实验换一个目录名。
+
+在 MetaX C500、MACA 3.3.0.15 的一次完整验证中，5 项 CTest 全部通过；双体 10000 步的最大相对间距误差约 `1.25e-5`。4096 粒子、1000 步时，`maca-naive` 模拟耗时 0.915 秒，CPU FP64 为 68.06 秒，末态位置/速度相对 L2 误差分别约 `1.99e-6`/`2.27e-6`。65536 粒子、2000 步时，`maca-naive` 模拟耗时 49.85 秒，输出 201 帧，所有数值有限。这些耗时是单次实测，不是重复采样的性能结论。
+
+轨迹可沿用原有可视化脚本。服务器上可在项目专用虚拟环境安装 Matplotlib，系统需有可运行的 FFmpeg；例如 4096 粒子完整动画：
+
+```bash
+python3 -m venv --system-site-packages /data/nbody-port/.venv
+/data/nbody-port/.venv/bin/python -m pip install matplotlib
+/data/nbody-port/.venv/bin/python scripts/visualize.py \
+  results/cluster_4096_maca --max-particles 4096
+```
 
 ## CUDA 朴素版
 
